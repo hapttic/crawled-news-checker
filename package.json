@@ -1,11 +1,15 @@
 {
   "name": "filter-crawled-news",
   "version": "0.1.0",
-  "description": "",
+  "description": "read files from s3",
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
-  "license": "ISC"
+  "license": "ISC",
+  "keywords": [],
+  "dependencies": {
+    "aws-sdk": "^2.1692.0"
+  }
 }
