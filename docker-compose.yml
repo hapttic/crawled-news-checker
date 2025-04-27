@@ -1,0 +1,23 @@
+version: "3"
+
+services:
+  crawler:
+    build: .
+    container_name: crawled-news-checker
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      # AWS Configuration - fill these in on the server
+      - AWS_REGION=
+      - AWS_ACCESS_KEY_ID=
+      - AWS_SECRET_ACCESS_KEY=
+      - S3_BUCKET=
+      # MongoDB Configuration - fill these in on the server
+      - MONGODB_URI=
+      - DB_NAME=
+      - COLLECTION_NAME=
+    volumes:
+      # For persistent logs
+      - ./logs:/usr/src/app/logs
+    # Run in cron mode by default
+    command: node src/index.js cron

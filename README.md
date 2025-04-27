@@ -13,6 +13,7 @@ A Node.js application for extracting and analyzing HTML and metadata from crawle
 - Tracks processed files to avoid redundant processing
 - Command-line interface for different operations
 - Automated processing via cron job that runs every 20 minutes
+- Docker support for containerized deployment
 
 ## Prerequisites
 
@@ -20,6 +21,7 @@ A Node.js application for extracting and analyzing HTML and metadata from crawle
 - MongoDB database
 - AWS S3 bucket with crawled news articles
 - AWS credentials configured for S3 access
+- Docker and Docker Compose (for containerized deployment)
 
 ## Installation
 
@@ -135,6 +137,96 @@ sudo systemctl status crawled-news-checker
 
 ```bash
 sudo journalctl -u crawled-news-checker -f
+```
+
+### Running with Docker
+
+The application can be easily deployed using Docker:
+
+#### Using Docker Compose
+
+1. Create logs directory:
+
+```bash
+mkdir -p logs
+```
+
+2. Fill in the environment variables in docker-compose.yml:
+
+```yaml
+environment:
+  - NODE_ENV=production
+  # AWS Configuration
+  - AWS_REGION=us-east-1
+  - AWS_ACCESS_KEY_ID=your_access_key_id
+  - AWS_SECRET_ACCESS_KEY=your_secret_access_key
+  - S3_BUCKET=your-bucket-name
+  # MongoDB Configuration
+  - MONGODB_URI=mongodb://username:password@host:port/database
+  - DB_NAME=crawled_news
+  - COLLECTION_NAME=crawled_articles
+```
+
+3. Build and start the container:
+
+```bash
+docker-compose up -d
+```
+
+4. View logs:
+
+```bash
+docker-compose logs -f
+```
+
+5. Stop the container:
+
+```bash
+docker-compose down
+```
+
+#### Using Docker directly
+
+1. Build the Docker image:
+
+```bash
+docker build -t crawled-news-checker .
+```
+
+2. Run the container with environment variables:
+
+```bash
+docker run -d --name crawled-news-checker \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID=your_aws_access_key \
+  -e AWS_SECRET_ACCESS_KEY=your_aws_secret_key \
+  -e S3_BUCKET=your-s3-bucket-name \
+  -e MONGODB_URI=mongodb://username:password@host:port/database \
+  -e DB_NAME=crawled_news \
+  -e COLLECTION_NAME=crawled_articles \
+  -v $(pwd)/logs:/usr/src/app/logs \
+  crawled-news-checker
+```
+
+3. View logs:
+
+```bash
+docker logs -f crawled-news-checker
+```
+
+4. Run different commands:
+
+```bash
+# Process files from the last 24 hours
+docker run --rm \
+  -e AWS_REGION=us-east-1 \
+  -e AWS_ACCESS_KEY_ID=your_aws_access_key \
+  -e AWS_SECRET_ACCESS_KEY=your_aws_secret_key \
+  -e S3_BUCKET=your-s3-bucket-name \
+  -e MONGODB_URI=mongodb://username:password@host:port/database \
+  -e DB_NAME=crawled_news \
+  -e COLLECTION_NAME=crawled_articles \
+  crawled-news-checker node src/index.js process 24
 ```
 
 ## Project Structure
