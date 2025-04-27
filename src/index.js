@@ -1,5 +1,7 @@
 require("dotenv").config();
 const AWS = require("aws-sdk");
+const { Readability } = require("@mozilla/readability");
+const { JSDOM } = require("jsdom");
 
 // Debug: Print credential provider chain details
 const credentialsObj = AWS.config.credentials;
@@ -50,6 +52,30 @@ async function getFileContent(key) {
   } catch (error) {
     console.error(`Error retrieving file ${key}:`, error);
     throw error;
+  }
+}
+
+/**
+ * Parse HTML content using Readability
+ * @param {string} html - HTML content
+ * @param {string} url - URL of the page (optional)
+ * @returns {Object} - Parsed article data
+ */
+function parseHtmlWithReadability(html, url = "") {
+  try {
+    // Create a DOM object from the HTML content
+    const dom = new JSDOM(html, { url });
+
+    // Create a new Readability object
+    const reader = new Readability(dom.window.document);
+
+    // Parse the content
+    const article = reader.parse();
+
+    return article;
+  } catch (error) {
+    console.error("Error parsing HTML with Readability:", error);
+    return null;
   }
 }
 
@@ -191,7 +217,7 @@ async function getRecentFiles(hours = 24) {
   }
 }
 
-// Simply get and display page.html and metadata.json files
+// Process and analyze HTML and metadata files
 async function readRecentFiles(hours = 1) {
   try {
     const recentFiles = await getRecentFiles(hours);
@@ -251,18 +277,61 @@ async function readRecentFiles(hours = 1) {
 
     const fileContents = await readHtmlAndMetadata(recentFiles);
     console.log(`Retrieved ${fileContents.length} HTML/metadata files`);
-    fileContents.forEach((file) => {
-      console.log(file.type);
-    });
 
-    fileContents.forEach((file) => {
-      if (file.type == "metadata") {
-        console.log("------------------ METADATA ------------------");
-        console.log(`\nFile: ${file.key}`);
-        console.log(`Type: ${file.type}`);
-        console.log(`Last Modified: ${file.lastModified}`);
+    // Process each file content
+    const processedContent = {};
+
+    for (const file of fileContents) {
+      // Extract the group key (domain/hash)
+      const keyParts = file.key.split("/");
+      const domain = keyParts[1];
+      const hash = keyParts[2];
+      const groupKey = `${domain}/${hash}`;
+
+      if (!processedContent[groupKey]) {
+        processedContent[groupKey] = {
+          domain,
+          hash,
+          metadata: null,
+          html: null,
+          parsed: null,
+        };
+      }
+
+      if (file.type === "metadata") {
+        try {
+          processedContent[groupKey].metadata = JSON.parse(file.content);
+        } catch (error) {
+          console.error(`Error parsing metadata JSON for ${groupKey}:`, error);
+          processedContent[groupKey].metadata = { error: "Invalid JSON" };
+        }
+      } else if (file.type === "html") {
+        processedContent[groupKey].html = file.content;
+
+        // Use Readability to parse HTML content
+        const url = processedContent[groupKey].metadata?.url || "";
+        processedContent[groupKey].parsed = parseHtmlWithReadability(
+          file.content,
+          url
+        );
+      }
+    }
+
+    // Display parsed content
+    console.log("\n\n================ PARSED CONTENT ================");
+    Object.keys(processedContent).forEach((groupKey) => {
+      const content = processedContent[groupKey];
+
+      if (content.parsed) {
+        console.log(`\n=== ${content.domain}/${content.hash} ===`);
+        console.log(`Title: ${content.parsed.title}`);
+        console.log(`Excerpt: ${content.parsed.excerpt}`);
+        console.log(`Length: ${content.parsed.textContent.length} characters`);
         console.log(
-          `Content (first 150 chars): ${file.content.substring(0, 150)}...`
+          `Content (first 300 chars): ${content.parsed.textContent.substring(
+            0,
+            300
+          )}...`
         );
       }
     });
@@ -281,6 +350,7 @@ async function readRecentFiles(hours = 1) {
       groupedByHash,
       brokenLinks,
       completeLinks,
+      processedContent,
     };
   } catch (error) {
     console.error("Error reading recent files:", error);
