@@ -2,8 +2,13 @@
   "name": "filter-crawled-news",
   "version": "0.1.0",
   "description": "read files from s3",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
+    "start": "node src/index.js process",
+    "process": "node src/index.js process",
+    "process:all": "node src/index.js process 24 true",
+    "summary": "node src/index.js summary",
+    "query": "node src/index.js query",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",

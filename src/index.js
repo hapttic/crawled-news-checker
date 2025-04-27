@@ -1409,7 +1409,105 @@ async function getProcessedFilesSummary() {
   }
 }
 
-// Execute the function
-// listFilesInBucket().catch(console.error);
-// getRecentFiles(1).catch(console.error);
-readRecentFiles(1, true).catch(console.error);
+// Main entry point for the application
+const newsProcessor = require("./controllers/newsProcessor");
+const processedFilesModel = require("./models/processedFiles");
+
+// Command line arguments
+const args = process.argv.slice(2);
+const command = args[0] || "process";
+const hoursArg = args[1] || "1";
+const hours = parseInt(hoursArg, 10);
+const useAllPagination = args[2] === "true" || args[2] === "1";
+
+// Execute command based on arguments
+async function main() {
+  try {
+    switch (command) {
+      case "process":
+        console.log(
+          `Processing files modified in the last ${hours} hours (useAllPagination: ${useAllPagination})`
+        );
+        await newsProcessor.processRecentFiles(hours, useAllPagination, true);
+        break;
+
+      case "summary":
+        console.log("Generating processed files summary...");
+        const summary = await processedFilesModel.getProcessedFilesSummary();
+        console.log("\n================ SUMMARY ================");
+        console.log(
+          `Total processed pairs: ${summary.totalStats.totalPairs || 0}`
+        );
+        console.log(`Success: ${summary.totalStats.successPairs || 0}`);
+        console.log(`Failed: ${summary.totalStats.failedPairs || 0}`);
+        console.log(`Incomplete: ${summary.totalStats.incompletePairs || 0}`);
+
+        console.log("\n================ DOMAIN STATS ================");
+        summary.domainStats.forEach((domain) => {
+          console.log(`\n--- ${domain._id || "unknown"} ---`);
+          console.log(`Total: ${domain.totalPairs}`);
+          console.log(`Success: ${domain.successPairs}`);
+          console.log(`Failed: ${domain.failedPairs}`);
+          console.log(`Incomplete: ${domain.incompletePairs}`);
+          console.log(`HTML only: ${domain.htmlOnlyPairs}`);
+          console.log(`Metadata only: ${domain.metadataOnlyPairs}`);
+        });
+        break;
+
+      case "query":
+        const domain = args[1];
+        const status = args[2];
+        const limit = parseInt(args[3] || "100", 10);
+
+        console.log(
+          `Querying processed files (domain: ${domain || "any"}, status: ${
+            status || "any"
+          }, limit: ${limit})`
+        );
+        const query = {
+          limit: limit,
+        };
+
+        if (domain) query.domain = domain;
+        if (status) query.status = status;
+
+        const results = await processedFilesModel.queryProcessedFiles(query);
+        console.log(
+          `Found ${results.total} matching pairs (showing ${results.pairs.length})`
+        );
+        results.pairs.forEach((pair) => {
+          console.log(`\n--- ${pair.pair_id} ---`);
+          console.log(`Status: ${pair.status}`);
+          console.log(`Processed: ${pair.processedAt}`);
+          console.log(`Has HTML: ${!!pair.html}`);
+          console.log(`Has Metadata: ${!!pair.metadata}`);
+        });
+        break;
+
+      default:
+        console.log(`Unknown command: ${command}`);
+        console.log("Available commands:");
+        console.log(
+          "  process [hours=1] [useAllPagination=false] - Process recently modified files"
+        );
+        console.log("  summary - Generate summary of processed files");
+        console.log(
+          "  query [domain] [status] [limit=100] - Query processed files"
+        );
+    }
+  } catch (error) {
+    console.error("Error executing command:", error);
+    process.exit(1);
+  }
+}
+
+// Run the main function
+main()
+  .then(() => {
+    console.log("Completed successfully");
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error("Fatal error:", error);
+    process.exit(1);
+  });
