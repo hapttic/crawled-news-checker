@@ -12,6 +12,7 @@ A Node.js application for extracting and analyzing HTML and metadata from crawle
 - Stores processed article data in MongoDB
 - Tracks processed files to avoid redundant processing
 - Command-line interface for different operations
+- Automated processing via cron job that runs every 20 minutes
 
 ## Prerequisites
 
@@ -94,6 +95,46 @@ node src/index.js query example.com success
 
 # Query with limit
 node src/index.js query example.com success 200
+```
+
+### Run as Automated Service
+
+The application can run as a service that automatically checks for new articles every 20 minutes:
+
+```bash
+# Run directly (keeps terminal open)
+npm run cron
+# or
+node src/index.js cron
+```
+
+#### Setting up as a System Service
+
+To run as a system service that starts on boot:
+
+1. Copy the service file to systemd:
+
+```bash
+sudo cp crawled-news-checker.service /etc/systemd/system/
+```
+
+2. Enable and start the service:
+
+```bash
+sudo systemctl enable crawled-news-checker
+sudo systemctl start crawled-news-checker
+```
+
+3. Check status:
+
+```bash
+sudo systemctl status crawled-news-checker
+```
+
+4. View logs:
+
+```bash
+sudo journalctl -u crawled-news-checker -f
 ```
 
 ## Project Structure

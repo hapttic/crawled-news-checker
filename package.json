@@ -9,6 +9,8 @@
     "process:all": "node src/index.js process 24 true",
     "summary": "node src/index.js summary",
     "query": "node src/index.js query",
+    "cron": "node src/index.js cron",
+    "service": "pm2 start src/index.js -- cron",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
@@ -21,6 +23,7 @@
     "colors": "^1.4.0",
     "dotenv": "^16.5.0",
     "jsdom": "^26.1.0",
-    "mongodb": "^6.16.0"
+    "mongodb": "^6.16.0",
+    "node-cron": "^3.0.3"
   }
 }

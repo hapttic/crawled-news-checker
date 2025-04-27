@@ -5,6 +5,7 @@ const { JSDOM } = require("jsdom");
 const { MongoClient } = require("mongodb");
 const fs = require("fs");
 const path = require("path");
+const cron = require("node-cron");
 
 // Debug: Print credential provider chain details
 const credentialsObj = AWS.config.credentials;
@@ -1420,6 +1421,40 @@ const hoursArg = args[1] || "1";
 const hours = parseInt(hoursArg, 10);
 const useAllPagination = args[2] === "true" || args[2] === "1";
 
+/**
+ * Process recent articles with default settings (1 hour lookback)
+ * Used for the cron job
+ */
+async function processRecentArticles() {
+  const startTime = new Date();
+  console.log(
+    `[${startTime.toISOString()}] Cron job started: Checking for new articles in the last hour`
+  );
+
+  try {
+    // Always process the last hour of data
+    // Don't use pagination to make the cron job faster
+    const result = await newsProcessor.processRecentFiles(1, false, true);
+
+    const endTime = new Date();
+    const duration = (endTime - startTime) / 1000; // in seconds
+
+    console.log(
+      `[${endTime.toISOString()}] Cron job completed in ${duration.toFixed(2)}s`
+    );
+    console.log(
+      `Found ${result.recentFiles.length} files modified in the last hour`
+    );
+    console.log(`Processed ${result.fileContents.length} HTML/metadata files`);
+    console.log(`Created ${result.articles.length} new articles`);
+    console.log(`Skipped ${result.skippedArticles.length} existing articles`);
+
+    return result;
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Cron job error:`, error);
+  }
+}
+
 // Execute command based on arguments
 async function main() {
   try {
@@ -1484,6 +1519,21 @@ async function main() {
         });
         break;
 
+      case "cron":
+        console.log("Starting cron job service...");
+        // Schedule a task to run every 20 minutes
+        cron.schedule("*/20 * * * *", async () => {
+          await processRecentArticles();
+        });
+
+        // Run immediately on startup
+        await processRecentArticles();
+
+        // Keep the process running
+        console.log("Cron job service is running. Press Ctrl+C to exit.");
+        // This will keep the script running
+        break;
+
       default:
         console.log(`Unknown command: ${command}`);
         console.log("Available commands:");
@@ -1494,6 +1544,9 @@ async function main() {
         console.log(
           "  query [domain] [status] [limit=100] - Query processed files"
         );
+        console.log(
+          "  cron - Start a service that checks for new articles every 20 minutes"
+        );
     }
   } catch (error) {
     console.error("Error executing command:", error);
@@ -1502,12 +1555,21 @@ async function main() {
 }
 
 // Run the main function
-main()
-  .then(() => {
-    console.log("Completed successfully");
-    process.exit(0);
-  })
-  .catch((error) => {
-    console.error("Fatal error:", error);
+if (command !== "cron") {
+  // For regular commands, run and exit
+  main()
+    .then(() => {
+      console.log("Completed successfully");
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error("Fatal error:", error);
+      process.exit(1);
+    });
+} else {
+  // For cron mode, just run without exiting
+  main().catch((error) => {
+    console.error("Fatal error in cron mode:", error);
     process.exit(1);
   });
+}
