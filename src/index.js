@@ -17,9 +17,7 @@ console.log(
 const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
 const DB_NAME = process.env.DB_NAME || "crawled_news";
 const COLLECTION_NAME = process.env.COLLECTION_NAME || "crawled_articles";
-
-// Tracking file for analyzed files
-const ANALYZED_FILES_LOG = path.join(__dirname, "../analyzed_files.json");
+const PROCESSED_FILES_COLLECTION = "crawled_processed_files";
 
 // S3 client
 const s3 = new AWS.S3();
@@ -78,7 +76,7 @@ function saveAnalyzedFiles(analyzedFiles) {
  * Connect to MongoDB
  * @returns {Promise<Object>} - MongoDB client and collection
  */
-async function connectToMongoDB() {
+async function connectToMongoDB(collectionName = COLLECTION_NAME) {
   try {
     console.log(`Connecting to MongoDB at ${MONGODB_URI}...`);
     const client = new MongoClient(MONGODB_URI);
@@ -86,12 +84,102 @@ async function connectToMongoDB() {
     console.log("Connected to MongoDB");
 
     const db = client.db(DB_NAME);
-    const collection = db.collection(COLLECTION_NAME);
+    const collection = db.collection(collectionName);
 
     return { client, collection };
   } catch (error) {
     console.error("Error connecting to MongoDB:", error);
     throw error;
+  }
+}
+
+/**
+ * Get list of already processed files from MongoDB
+ * @returns {Promise<Object>} - Map of file keys to last modified timestamps
+ */
+async function getProcessedFilesFromDB() {
+  let client;
+  try {
+    // Connect to MongoDB
+    const connection = await connectToMongoDB(PROCESSED_FILES_COLLECTION);
+    client = connection.client;
+    const collection = connection.collection;
+
+    // Get all processed files
+    const processedFiles = await collection.find({}).toArray();
+
+    // Create a map of file keys to last modified timestamps
+    const processedFilesMap = {};
+    processedFiles.forEach((file) => {
+      processedFilesMap[file._id] = file.lastModified;
+    });
+
+    console.log(
+      `Retrieved ${processedFiles.length} processed files from database`
+    );
+    return processedFilesMap;
+  } catch (error) {
+    console.error("Error getting processed files from MongoDB:", error);
+    return {};
+  } finally {
+    // Close the MongoDB connection
+    if (client) {
+      await client.close();
+    }
+  }
+}
+
+/**
+ * Save processed files to MongoDB
+ * @param {Object} processedFiles - Map of file keys to last modified timestamps
+ * @returns {Promise<boolean>} - Success or failure
+ */
+async function saveProcessedFilesToDB(processedFiles) {
+  if (!processedFiles || Object.keys(processedFiles).length === 0) {
+    return true;
+  }
+
+  let client;
+  try {
+    // Connect to MongoDB
+    const connection = await connectToMongoDB(PROCESSED_FILES_COLLECTION);
+    client = connection.client;
+    const collection = connection.collection;
+
+    // Convert the map to an array of documents
+    const documents = Object.entries(processedFiles).map(
+      ([key, lastModified]) => ({
+        _id: key,
+        lastModified,
+        processedAt: new Date(),
+      })
+    );
+
+    // Insert documents with upsert (update if exists, insert if not)
+    const bulkOps = documents.map((doc) => ({
+      updateOne: {
+        filter: { _id: doc._id },
+        update: { $set: doc },
+        upsert: true,
+      },
+    }));
+
+    // Execute bulk operation
+    const result = await collection.bulkWrite(bulkOps);
+    console.log(`Saved ${documents.length} processed files to database`);
+    console.log(
+      `Inserted: ${result.upsertedCount}, Updated: ${result.modifiedCount}`
+    );
+
+    return true;
+  } catch (error) {
+    console.error("Error saving processed files to MongoDB:", error);
+    return false;
+  } finally {
+    // Close the MongoDB connection
+    if (client) {
+      await client.close();
+    }
   }
 }
 
@@ -435,12 +523,12 @@ function identifyBrokenLinks(groupedFiles) {
 /**
  * Reads page.html and metadata from files with specified pattern
  * @param {Array} files - Array of S3 objects
- * @param {Object} analyzedFiles - Object tracking already analyzed files
- * @returns {Promise<Array>} - Array of objects with file info and content
+ * @param {Object} processedFiles - Object tracking already processed files
+ * @returns {Promise<Object>} - Object with results and newly processed files
  */
-async function readHtmlAndMetadata(files, analyzedFiles) {
+async function readHtmlAndMetadata(files, processedFiles) {
   const results = [];
-  const newlyAnalyzedFiles = {};
+  const newlyProcessedFiles = {};
   let skippedCount = 0;
 
   for (const file of files) {
@@ -450,22 +538,22 @@ async function readHtmlAndMetadata(files, analyzedFiles) {
         file.Key.endsWith("/page.html") ||
         file.Key.endsWith("/metadata.json")
       ) {
-        // Check if this file has been analyzed before and hasn't been modified
+        // Check if this file has been processed before and hasn't been modified
         const fileKey = file.Key;
         const lastModified = file.LastModified.toISOString();
 
         if (
-          analyzedFiles.files[fileKey] &&
-          analyzedFiles.files[fileKey] === lastModified
+          processedFiles[fileKey] &&
+          processedFiles[fileKey] === lastModified
         ) {
           skippedCount++;
-          continue; // Skip this file as it's already been analyzed
+          continue; // Skip this file as it's already been processed
         }
 
         const content = await getFileContent(fileKey);
 
-        // Mark this file as analyzed
-        newlyAnalyzedFiles[fileKey] = lastModified;
+        // Mark this file as processed
+        newlyProcessedFiles[fileKey] = lastModified;
 
         results.push({
           key: fileKey,
@@ -480,13 +568,13 @@ async function readHtmlAndMetadata(files, analyzedFiles) {
   }
 
   console.log(
-    `Skipped ${skippedCount} previously analyzed files that haven't changed`
+    `Skipped ${skippedCount} previously processed files that haven't changed`
   );
 
-  // Update analyzed files with new entries
-  Object.assign(analyzedFiles.files, newlyAnalyzedFiles);
-
-  return results;
+  return {
+    results,
+    newlyProcessedFiles,
+  };
 }
 
 /**
@@ -611,14 +699,13 @@ async function readRecentFiles(
   saveToMongoDB = true
 ) {
   try {
-    // Load list of already analyzed files
-    const analyzedFiles = loadAnalyzedFiles();
+    // Get list of already processed files from database
+    const processedFiles = await getProcessedFilesFromDB();
     console.log(
       `Loaded ${
-        Object.keys(analyzedFiles.files).length
-      } previously analyzed files`
+        Object.keys(processedFiles).length
+      } previously processed files from database`
     );
-    console.log(`Last run: ${analyzedFiles.lastRun || "Never"}`);
 
     const recentFiles = await getRecentFiles(hours, useAllPagination);
     console.log(
@@ -675,9 +762,16 @@ async function readRecentFiles(
       });
     });
 
-    const fileContents = await readHtmlAndMetadata(recentFiles, analyzedFiles);
+    // Read HTML and metadata files, skipping previously processed ones
+    const htmlAndMetadata = await readHtmlAndMetadata(
+      recentFiles,
+      processedFiles
+    );
+    const fileContents = htmlAndMetadata.results;
+    const newlyProcessedFiles = htmlAndMetadata.newlyProcessedFiles;
+
     console.log(
-      `Retrieved ${fileContents.length} HTML/metadata files (after skipping previously analyzed files)`
+      `Retrieved ${fileContents.length} HTML/metadata files (after skipping previously processed files)`
     );
 
     // Process each file content
@@ -873,8 +967,10 @@ async function readRecentFiles(
       });
     }
 
-    // Save the updated list of analyzed files
-    saveAnalyzedFiles(analyzedFiles);
+    // Save the newly processed files to database
+    if (Object.keys(newlyProcessedFiles).length > 0) {
+      await saveProcessedFilesToDB(newlyProcessedFiles);
+    }
 
     return {
       recentFiles,
