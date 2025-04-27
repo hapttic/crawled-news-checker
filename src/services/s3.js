@@ -1,5 +1,7 @@
 const AWS = require("aws-sdk");
 const config = require("../config");
+const cliProgress = require("cli-progress");
+const colors = require("colors");
 
 // Initialize S3 client
 const s3 = new AWS.S3();
@@ -18,6 +20,23 @@ async function listAllFiles(options = {}) {
   const allFiles = [];
   let continuationToken = null;
   let pageCount = 0;
+  let estimatedPages = options.estimatedPages || 10; // Initial estimate
+
+  // Create a new progress bar instance for pagination
+  const progressBar = new cliProgress.SingleBar({
+    format:
+      colors.green("Fetching S3 file list |") +
+      "{bar}" +
+      colors.green("| {percentage}% || Page {value}/{total} || Files: {files}"),
+    barCompleteChar: "\u2588",
+    barIncompleteChar: "\u2591",
+    hideCursor: true,
+  });
+
+  console.log("\nRetrieving files from S3 bucket...");
+  progressBar.start(estimatedPages, 0, {
+    files: 0,
+  });
 
   do {
     try {
@@ -41,9 +60,17 @@ async function listAllFiles(options = {}) {
         allFiles.push(...data.Contents);
         pageCount++;
 
-        console.log(
-          `Retrieved page ${pageCount} with ${data.Contents.length} files (total: ${allFiles.length})`
-        );
+        // If the number of pages exceeds our estimate, increase the estimate
+        if (pageCount > estimatedPages) {
+          const oldEstimate = estimatedPages;
+          estimatedPages = Math.max(estimatedPages * 2, pageCount + 5);
+          progressBar.setTotal(estimatedPages);
+        }
+
+        // Update progress bar
+        progressBar.update(pageCount, {
+          files: allFiles.length,
+        });
       }
 
       // Set the continuation token for the next request
@@ -52,7 +79,7 @@ async function listAllFiles(options = {}) {
       // If we hit a page limit, stop
       if (options.maxPages && pageCount >= options.maxPages) {
         console.log(
-          `Reached maximum page count (${options.maxPages}), stopping pagination`
+          `\nReached maximum page count (${options.maxPages}), stopping pagination`
         );
         break;
       }
@@ -62,8 +89,11 @@ async function listAllFiles(options = {}) {
     }
   } while (continuationToken);
 
+  // Stop the progress bar
+  progressBar.stop();
+
   console.log(
-    `Retrieved ${allFiles.length} total files from ${pageCount} pages`
+    `\nRetrieved ${allFiles.length} total files from ${pageCount} pages`
   );
   return allFiles;
 }

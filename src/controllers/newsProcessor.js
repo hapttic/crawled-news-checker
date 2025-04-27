@@ -4,6 +4,8 @@ const fileProcessor = require("../services/fileProcessor");
 const parser = require("../services/parser");
 const articlesModel = require("../models/articles");
 const processedFilesModel = require("../models/processedFiles");
+const cliProgress = require("cli-progress");
+const colors = require("colors");
 
 /**
  * Process and analyze HTML and metadata files
@@ -135,6 +137,34 @@ async function processRecentFiles(
     const invalidMetadataUrls = [];
     const failedReadabilityLinks = [];
 
+    // Create a progress bar for content processing
+    const progressBar = new cliProgress.MultiBar(
+      {
+        clearOnComplete: false,
+        hideCursor: true,
+        format: "{bar} {percentage}% | {title}",
+      },
+      cliProgress.Presets.shades_classic
+    );
+
+    // Create two bars: one for HTML and one for metadata
+    const htmlBar = progressBar.create(
+      fileContents.filter((f) => f.type === "html").length,
+      0,
+      { title: colors.yellow("Processing HTML     ") }
+    );
+    const metadataBar = progressBar.create(
+      fileContents.filter((f) => f.type === "metadata").length,
+      0,
+      { title: colors.blue("Processing Metadata") }
+    );
+
+    // Progress counters
+    let htmlProcessed = 0;
+    let metadataProcessed = 0;
+
+    console.log("\n\n================ CONTENT PROCESSING ================");
+
     for (const file of fileContents) {
       // Extract the group key (domain/hash)
       const keyParts = file.key.split("/");
@@ -173,6 +203,10 @@ async function processRecentFiles(
             error: "Invalid JSON",
           });
         }
+
+        // Update metadata progress bar
+        metadataProcessed++;
+        metadataBar.update(metadataProcessed);
       } else if (file.type === "html") {
         processedContent[groupKey].html = file.content;
 
@@ -202,8 +236,15 @@ async function processRecentFiles(
               : null,
           });
         }
+
+        // Update HTML progress bar
+        htmlProcessed++;
+        htmlBar.update(htmlProcessed);
       }
     }
+
+    // Stop the progress bars
+    progressBar.stop();
 
     // Print invalid metadata URLs
     console.log("\n\n================ INVALID METADATA URLS ================");

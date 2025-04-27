@@ -1,5 +1,7 @@
 const db = require("../services/database");
 const config = require("../config");
+const cliProgress = require("cli-progress");
+const colors = require("colors");
 
 /**
  * Check if articles already exist in MongoDB
@@ -13,6 +15,17 @@ async function checkExistingArticles(articleIds) {
 
   let client;
   try {
+    // Create a progress bar
+    const progressBar = new cliProgress.SingleBar({
+      format:
+        colors.magenta("Checking articles in MongoDB |") +
+        "{bar}" +
+        colors.magenta("| {percentage}% || {value}/{total} articles"),
+      barCompleteChar: "\u2588",
+      barIncompleteChar: "\u2591",
+      hideCursor: true,
+    });
+
     // Connect to MongoDB
     const connection = await db.connect();
     client = connection.client;
@@ -22,6 +35,9 @@ async function checkExistingArticles(articleIds) {
       `Checking ${articleIds.length} articles for existing entries...`
     );
 
+    // Start the progress bar
+    progressBar.start(articleIds.length, 0);
+
     // Query for existing articles
     const existingArticles = await collection
       .find({ _id: { $in: articleIds } })
@@ -30,13 +46,20 @@ async function checkExistingArticles(articleIds) {
 
     // Create a map of article IDs to existence status
     const existingMap = {};
+    let count = 0;
+
     articleIds.forEach((id) => {
       existingMap[id] = false;
+      count++;
+      progressBar.update(count);
     });
 
     existingArticles.forEach((article) => {
       existingMap[article._id] = true;
     });
+
+    // Stop the progress bar
+    progressBar.stop();
 
     const existingCount = existingArticles.length;
     console.log(`Found ${existingCount} articles already in the database`);
@@ -68,6 +91,17 @@ async function saveArticles(articles) {
   let client;
 
   try {
+    // Create a progress bar
+    const progressBar = new cliProgress.SingleBar({
+      format:
+        colors.cyan("Saving articles to MongoDB |") +
+        "{bar}" +
+        colors.cyan("| {percentage}% || {value}/{total} articles"),
+      barCompleteChar: "\u2588",
+      barIncompleteChar: "\u2591",
+      hideCursor: true,
+    });
+
     // Connect to MongoDB
     const connection = await db.connect();
     client = connection.client;
@@ -79,26 +113,41 @@ async function saveArticles(articles) {
       _id: article.id, // Use our id as MongoDB's _id
     }));
 
-    console.log(`Preparing to save ${articles.length} articles to MongoDB...`);
+    console.log(
+      `\nPreparing to save ${articles.length} articles to MongoDB...`
+    );
+
+    // Start the progress bar
+    progressBar.start(articles.length, 0);
 
     // Insert articles with upsert (update if exists, insert if not)
-    const bulkOps = articlesWithId.map((article) => ({
-      updateOne: {
-        filter: { _id: article._id },
-        update: { $set: article },
-        upsert: true,
-      },
-    }));
+    const bulkOps = articlesWithId.map((article, index) => {
+      // Update progress bar
+      progressBar.update(index + 1);
+
+      return {
+        updateOne: {
+          filter: { _id: article._id },
+          update: { $set: article },
+          upsert: true,
+        },
+      };
+    });
 
     // Execute bulk operation if there are articles
     let result = { upsertedCount: 0, modifiedCount: 0, matchedCount: 0 };
     if (bulkOps.length > 0) {
       result = await collection.bulkWrite(bulkOps);
+      // Stop the progress bar
+      progressBar.stop();
+
       console.log("MongoDB operation completed successfully");
       console.log(
         `Inserted: ${result.upsertedCount}, Updated: ${result.modifiedCount}, Matched: ${result.matchedCount}`
       );
     } else {
+      // Stop the progress bar
+      progressBar.stop();
       console.log("No articles to save");
     }
 

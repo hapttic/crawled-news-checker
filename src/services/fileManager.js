@@ -1,5 +1,7 @@
 const s3Service = require("./s3");
 const config = require("../config");
+const cliProgress = require("cli-progress");
+const colors = require("colors");
 
 /**
  * Reads page.html and metadata from files with specified pattern
@@ -13,7 +15,41 @@ async function readHtmlAndMetadata(files, processedFiles) {
   const processingResults = {};
   let skippedCount = 0;
 
-  for (const file of files) {
+  // Filter files to only those we need to process (HTML and metadata)
+  const filesToProcess = files.filter(
+    (file) =>
+      file.Key.endsWith(`/${config.files.htmlFileName}`) ||
+      file.Key.endsWith(`/${config.files.metadataFileName}`)
+  );
+
+  // Count how many files we'll actually process (exclude already processed)
+  const filesToDownload = filesToProcess.filter((file) => {
+    const fileKey = file.Key;
+    const lastModified = file.LastModified.toISOString();
+    return !(
+      processedFiles[fileKey] && processedFiles[fileKey] === lastModified
+    );
+  });
+
+  // Create a new progress bar instance
+  const progressBar = new cliProgress.SingleBar({
+    format:
+      colors.cyan("Downloading files |") +
+      "{bar}" +
+      colors.cyan("| {percentage}% || {value}/{total} files || ETA: {eta}s"),
+    barCompleteChar: "\u2588",
+    barIncompleteChar: "\u2591",
+    hideCursor: true,
+  });
+
+  if (filesToDownload.length > 0) {
+    console.log(`\nDownloading ${filesToDownload.length} files...`);
+    progressBar.start(filesToDownload.length, 0);
+  }
+
+  let processedCount = 0;
+
+  for (const file of filesToProcess) {
     try {
       // Check if file is page.html or metadata.json
       if (
@@ -67,14 +103,25 @@ async function readHtmlAndMetadata(files, processedFiles) {
           processingTimeMs: endTime - startTime,
           fileSize: file.Size,
         };
+
+        // Update progress bar
+        processedCount++;
+        if (filesToDownload.length > 0) {
+          progressBar.update(processedCount);
+        }
       }
     } catch (error) {
       console.error(`Error processing file ${file.Key}:`, error);
     }
   }
 
+  // Stop the progress bar
+  if (filesToDownload.length > 0) {
+    progressBar.stop();
+  }
+
   console.log(
-    `Skipped ${skippedCount} previously processed files that haven't changed`
+    `\nSkipped ${skippedCount} previously processed files that haven't changed`
   );
 
   return {
