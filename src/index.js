@@ -3,6 +3,8 @@ const AWS = require("aws-sdk");
 const { Readability } = require("@mozilla/readability");
 const { JSDOM } = require("jsdom");
 const { MongoClient } = require("mongodb");
+const fs = require("fs");
+const path = require("path");
 
 // Debug: Print credential provider chain details
 const credentialsObj = AWS.config.credentials;
@@ -16,11 +18,61 @@ const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
 const DB_NAME = process.env.DB_NAME || "crawled_news";
 const COLLECTION_NAME = process.env.COLLECTION_NAME || "crawled_articles";
 
+// Tracking file for analyzed files
+const ANALYZED_FILES_LOG = path.join(__dirname, "../analyzed_files.json");
+
+// S3 client
 const s3 = new AWS.S3();
 
 const params = {
   Bucket: process.env.S3_BUCKET || "second-hapttic-bucket",
 };
+
+/**
+ * Load the list of already analyzed files
+ * @returns {Object} - Object with file keys as properties
+ */
+function loadAnalyzedFiles() {
+  try {
+    if (fs.existsSync(ANALYZED_FILES_LOG)) {
+      const data = fs.readFileSync(ANALYZED_FILES_LOG, "utf8");
+      return JSON.parse(data);
+    }
+    console.log("No analyzed files log found, creating a new one");
+    return { files: {}, lastRun: null };
+  } catch (error) {
+    console.error("Error loading analyzed files log:", error);
+    return { files: {}, lastRun: null };
+  }
+}
+
+/**
+ * Save the list of analyzed files
+ * @param {Object} analyzedFiles - Object with file keys and timestamps
+ */
+function saveAnalyzedFiles(analyzedFiles) {
+  try {
+    // Update the last run timestamp
+    analyzedFiles.lastRun = new Date().toISOString();
+
+    // Ensure directory exists
+    const dir = path.dirname(ANALYZED_FILES_LOG);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    fs.writeFileSync(
+      ANALYZED_FILES_LOG,
+      JSON.stringify(analyzedFiles, null, 2),
+      "utf8"
+    );
+    console.log(
+      `Saved ${Object.keys(analyzedFiles.files).length} analyzed files to log`
+    );
+  } catch (error) {
+    console.error("Error saving analyzed files log:", error);
+  }
+}
 
 /**
  * Connect to MongoDB
@@ -44,11 +96,69 @@ async function connectToMongoDB() {
 }
 
 /**
+ * Check if articles already exist in MongoDB
+ * @param {Array} articleIds - Array of article IDs to check
+ * @returns {Promise<Object>} - Object with article IDs as keys and boolean values
+ */
+async function checkExistingArticles(articleIds) {
+  if (!articleIds || articleIds.length === 0) {
+    return {};
+  }
+
+  let client;
+  try {
+    // Connect to MongoDB
+    const connection = await connectToMongoDB();
+    client = connection.client;
+    const collection = connection.collection;
+
+    console.log(
+      `Checking ${articleIds.length} articles for existing entries...`
+    );
+
+    // Query for existing articles
+    const existingArticles = await collection
+      .find({ _id: { $in: articleIds } })
+      .project({ _id: 1 })
+      .toArray();
+
+    // Create a map of article IDs to existence status
+    const existingMap = {};
+    articleIds.forEach((id) => {
+      existingMap[id] = false;
+    });
+
+    existingArticles.forEach((article) => {
+      existingMap[article._id] = true;
+    });
+
+    const existingCount = existingArticles.length;
+    console.log(`Found ${existingCount} articles already in the database`);
+
+    return existingMap;
+  } catch (error) {
+    console.error("Error checking for existing articles:", error);
+    return {};
+  } finally {
+    // Close the MongoDB connection
+    if (client) {
+      await client.close();
+      console.log("MongoDB connection closed");
+    }
+  }
+}
+
+/**
  * Save articles to MongoDB
  * @param {Array} articles - Array of article objects
  * @returns {Promise<Object>} - Result of the insert operation
  */
 async function saveArticlesToMongoDB(articles) {
+  if (!articles || articles.length === 0) {
+    console.log("No articles to save");
+    return { upsertedCount: 0, modifiedCount: 0, matchedCount: 0 };
+  }
+
   let client;
 
   try {
@@ -147,6 +257,7 @@ async function getFileContent(key) {
 function parseHtmlWithReadability(html, url = "") {
   try {
     // Create a DOM object from the HTML content
+    // Use default URL if none provided or if URL is invalid
     const domOptions = {
       url: url && url.startsWith("http") ? url : "https://example.com",
     };
@@ -324,10 +435,13 @@ function identifyBrokenLinks(groupedFiles) {
 /**
  * Reads page.html and metadata from files with specified pattern
  * @param {Array} files - Array of S3 objects
+ * @param {Object} analyzedFiles - Object tracking already analyzed files
  * @returns {Promise<Array>} - Array of objects with file info and content
  */
-async function readHtmlAndMetadata(files) {
+async function readHtmlAndMetadata(files, analyzedFiles) {
   const results = [];
+  const newlyAnalyzedFiles = {};
+  let skippedCount = 0;
 
   for (const file of files) {
     try {
@@ -336,11 +450,26 @@ async function readHtmlAndMetadata(files) {
         file.Key.endsWith("/page.html") ||
         file.Key.endsWith("/metadata.json")
       ) {
-        const content = await getFileContent(file.Key);
+        // Check if this file has been analyzed before and hasn't been modified
+        const fileKey = file.Key;
+        const lastModified = file.LastModified.toISOString();
+
+        if (
+          analyzedFiles.files[fileKey] &&
+          analyzedFiles.files[fileKey] === lastModified
+        ) {
+          skippedCount++;
+          continue; // Skip this file as it's already been analyzed
+        }
+
+        const content = await getFileContent(fileKey);
+
+        // Mark this file as analyzed
+        newlyAnalyzedFiles[fileKey] = lastModified;
 
         results.push({
-          key: file.Key,
-          type: file.Key.endsWith("/page.html") ? "html" : "metadata",
+          key: fileKey,
+          type: fileKey.endsWith("/page.html") ? "html" : "metadata",
           lastModified: file.LastModified,
           content,
         });
@@ -349,6 +478,13 @@ async function readHtmlAndMetadata(files) {
       console.error(`Error processing file ${file.Key}:`, error);
     }
   }
+
+  console.log(
+    `Skipped ${skippedCount} previously analyzed files that haven't changed`
+  );
+
+  // Update analyzed files with new entries
+  Object.assign(analyzedFiles.files, newlyAnalyzedFiles);
 
   return results;
 }
@@ -475,6 +611,15 @@ async function readRecentFiles(
   saveToMongoDB = true
 ) {
   try {
+    // Load list of already analyzed files
+    const analyzedFiles = loadAnalyzedFiles();
+    console.log(
+      `Loaded ${
+        Object.keys(analyzedFiles.files).length
+      } previously analyzed files`
+    );
+    console.log(`Last run: ${analyzedFiles.lastRun || "Never"}`);
+
     const recentFiles = await getRecentFiles(hours, useAllPagination);
     console.log(
       `Processing ${recentFiles.length} files for HTML and metadata...`
@@ -530,8 +675,10 @@ async function readRecentFiles(
       });
     });
 
-    const fileContents = await readHtmlAndMetadata(recentFiles);
-    console.log(`Retrieved ${fileContents.length} HTML/metadata files`);
+    const fileContents = await readHtmlAndMetadata(recentFiles, analyzedFiles);
+    console.log(
+      `Retrieved ${fileContents.length} HTML/metadata files (after skipping previously analyzed files)`
+    );
 
     // Process each file content
     const processedContent = {};
@@ -655,34 +802,67 @@ async function readRecentFiles(
     }
 
     // Create article objects from processed content
-    const articles = [];
+    const articleCandidates = [];
 
     Object.keys(processedContent).forEach((groupKey) => {
       const content = processedContent[groupKey];
       const article = createArticleObject(content);
 
       if (article) {
-        articles.push(article);
+        articleCandidates.push(article);
       }
     });
+
+    // Check which articles already exist in the database
+    const articleIds = articleCandidates.map((article) => article.id);
+    const existingArticles = saveToMongoDB
+      ? await checkExistingArticles(articleIds)
+      : {};
+
+    // Filter out articles that already exist in the database
+    const newArticles = articleCandidates.filter(
+      (article) => !existingArticles[article.id]
+    );
+    const skippedArticles = articleCandidates.filter(
+      (article) => existingArticles[article.id]
+    );
 
     // Display article objects
     console.log("\n\n================ VALID ARTICLES ================");
     console.log(
-      `Found ${articles.length} valid articles with metadata and content`
+      `Found ${articleCandidates.length} valid articles with metadata and content`
+    );
+    console.log(
+      `- ${newArticles.length} new articles to be added to the database`
+    );
+    console.log(
+      `- ${skippedArticles.length} articles already exist in the database`
     );
 
-    articles.forEach((article) => {
-      console.log(`\n--- Article object for ${article.id} ---`);
-      console.log(JSON.stringify(article, null, 2));
-      console.log("=".repeat(80));
-    });
+    if (newArticles.length > 0) {
+      console.log("\n----- NEW ARTICLES -----");
+      newArticles.forEach((article) => {
+        console.log(`\n--- Article object for ${article.id} ---`);
+        console.log(JSON.stringify(article, null, 2));
+        console.log("=".repeat(80));
+      });
+    }
+
+    if (skippedArticles.length > 0) {
+      console.log("\n----- SKIPPED ARTICLES (ALREADY IN DATABASE) -----");
+      skippedArticles.forEach((article) => {
+        console.log(`- ${article.id} (${article.title})`);
+      });
+    }
 
     // Save articles to MongoDB if requested
     let mongoResult = null;
-    if (saveToMongoDB && articles.length > 0) {
+    if (saveToMongoDB && newArticles.length > 0) {
       console.log("\n\n================ SAVING TO MONGODB ================");
-      mongoResult = await saveArticlesToMongoDB(articles);
+      mongoResult = await saveArticlesToMongoDB(newArticles);
+    } else if (saveToMongoDB) {
+      console.log("\n\n================ MONGODB UPDATE ================");
+      console.log("No new articles to save to MongoDB");
     }
 
     // Print summary of broken links
@@ -693,6 +873,9 @@ async function readRecentFiles(
       });
     }
 
+    // Save the updated list of analyzed files
+    saveAnalyzedFiles(analyzedFiles);
+
     return {
       recentFiles,
       fileContents,
@@ -700,7 +883,8 @@ async function readRecentFiles(
       brokenLinks,
       completeLinks,
       processedContent,
-      articles,
+      articles: newArticles,
+      skippedArticles,
       invalidMetadataUrls,
       failedReadabilityLinks,
       mongoResult,
