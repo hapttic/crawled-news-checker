@@ -2,6 +2,7 @@ require("dotenv").config();
 const AWS = require("aws-sdk");
 const { Readability } = require("@mozilla/readability");
 const { JSDOM } = require("jsdom");
+const { MongoClient } = require("mongodb");
 
 // Debug: Print credential provider chain details
 const credentialsObj = AWS.config.credentials;
@@ -10,11 +11,93 @@ console.log(
   credentialsObj ? "Available" : "Not available"
 );
 
+// MongoDB connection string
+const MONGODB_URI = process.env.MONGODB_URI || "mongodb://localhost:27017";
+const DB_NAME = process.env.DB_NAME || "crawled_news";
+const COLLECTION_NAME = process.env.COLLECTION_NAME || "crawled_articles";
+
 const s3 = new AWS.S3();
 
 const params = {
   Bucket: process.env.S3_BUCKET || "second-hapttic-bucket",
 };
+
+/**
+ * Connect to MongoDB
+ * @returns {Promise<Object>} - MongoDB client and collection
+ */
+async function connectToMongoDB() {
+  try {
+    console.log(`Connecting to MongoDB at ${MONGODB_URI}...`);
+    const client = new MongoClient(MONGODB_URI);
+    await client.connect();
+    console.log("Connected to MongoDB");
+
+    const db = client.db(DB_NAME);
+    const collection = db.collection(COLLECTION_NAME);
+
+    return { client, collection };
+  } catch (error) {
+    console.error("Error connecting to MongoDB:", error);
+    throw error;
+  }
+}
+
+/**
+ * Save articles to MongoDB
+ * @param {Array} articles - Array of article objects
+ * @returns {Promise<Object>} - Result of the insert operation
+ */
+async function saveArticlesToMongoDB(articles) {
+  let client;
+
+  try {
+    // Connect to MongoDB
+    const connection = await connectToMongoDB();
+    client = connection.client;
+    const collection = connection.collection;
+
+    // Set unique ID field for each article
+    const articlesWithId = articles.map((article) => ({
+      ...article,
+      _id: article.id, // Use our id as MongoDB's _id
+    }));
+
+    console.log(`Preparing to save ${articles.length} articles to MongoDB...`);
+
+    // Insert articles with upsert (update if exists, insert if not)
+    const bulkOps = articlesWithId.map((article) => ({
+      updateOne: {
+        filter: { _id: article._id },
+        update: { $set: article },
+        upsert: true,
+      },
+    }));
+
+    // Execute bulk operation if there are articles
+    let result = { upsertedCount: 0, modifiedCount: 0, matchedCount: 0 };
+    if (bulkOps.length > 0) {
+      result = await collection.bulkWrite(bulkOps);
+      console.log("MongoDB operation completed successfully");
+      console.log(
+        `Inserted: ${result.upsertedCount}, Updated: ${result.modifiedCount}, Matched: ${result.matchedCount}`
+      );
+    } else {
+      console.log("No articles to save");
+    }
+
+    return result;
+  } catch (error) {
+    console.error("Error saving articles to MongoDB:", error);
+    throw error;
+  } finally {
+    // Close the MongoDB connection
+    if (client) {
+      await client.close();
+      console.log("MongoDB connection closed");
+    }
+  }
+}
 
 /**
  * Filters S3 files that were modified after the specified hours
@@ -344,7 +427,11 @@ async function getRecentFiles(hours = 24, useAllPagination = false) {
 }
 
 // Process and analyze HTML and metadata files
-async function readRecentFiles(hours = 1, useAllPagination = false) {
+async function readRecentFiles(
+  hours = 1,
+  useAllPagination = false,
+  saveToMongoDB = true
+) {
   try {
     const recentFiles = await getRecentFiles(hours, useAllPagination);
     console.log(
@@ -467,6 +554,13 @@ async function readRecentFiles(hours = 1, useAllPagination = false) {
       console.log("=".repeat(80));
     });
 
+    // Save articles to MongoDB if requested
+    let mongoResult = null;
+    if (saveToMongoDB && articles.length > 0) {
+      console.log("\n\n================ SAVING TO MONGODB ================");
+      mongoResult = await saveArticlesToMongoDB(articles);
+    }
+
     // Print summary of broken links
     if (brokenLinks.length > 0) {
       console.log("\n\n================ BROKEN LINKS SUMMARY ================");
@@ -483,6 +577,7 @@ async function readRecentFiles(hours = 1, useAllPagination = false) {
       completeLinks,
       processedContent,
       articles,
+      mongoResult,
     };
   } catch (error) {
     console.error("Error reading recent files:", error);
