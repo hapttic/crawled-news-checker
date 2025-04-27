@@ -84,36 +84,57 @@ function parseHtmlWithReadability(html, url = "") {
 }
 
 /**
- * Format essential metadata as a readable string
+ * Extract essential metadata fields
  * @param {Object} metadata - Metadata object
- * @returns {string|null} - Formatted metadata string or null if essential fields are missing
+ * @returns {Object|null} - Object with essential metadata or null if missing
  */
-function formatEssentialMetadata(metadata) {
+function extractEssentialMetadata(metadata) {
   if (!metadata) return null;
 
-  const formattedLines = [];
-
-  // Define essential fields to display
-  const essentialFields = {
-    url: "URL",
-    crawl_time: "Crawl Time",
-    depth: "Depth",
-  };
+  const essentialFields = ["url", "crawl_time", "depth"];
+  const extracted = {};
 
   // Check if any essential fields exist
-  const hasEssentialFields = Object.keys(essentialFields).some(
+  const hasEssentialFields = essentialFields.some(
     (key) => metadata[key] !== undefined
   );
   if (!hasEssentialFields) return null;
 
-  // Add essential fields
-  for (const [key, label] of Object.entries(essentialFields)) {
-    if (metadata[key] !== undefined) {
-      formattedLines.push(`${label}: ${metadata[key]}`);
+  // Copy essential fields
+  essentialFields.forEach((field) => {
+    if (metadata[field] !== undefined) {
+      extracted[field] = metadata[field];
     }
-  }
+  });
 
-  return formattedLines.join("\n");
+  return extracted;
+}
+
+/**
+ * Creates an article object with essential data
+ * @param {Object} data - Article data including metadata and parsed content
+ * @returns {Object|null} - Formatted article object or null if invalid
+ */
+function createArticleObject(data) {
+  if (!data.metadata || !data.parsed) return null;
+
+  // Extract essential metadata
+  const metadata = extractEssentialMetadata(data.metadata);
+  if (!metadata) return null;
+
+  // Create article object
+  return {
+    id: `${data.domain}/${data.hash}`,
+    domain: data.domain,
+    hash: data.hash,
+    title: data.parsed.title,
+    excerpt: data.parsed.excerpt || "",
+    content: data.parsed.textContent,
+    contentLength: data.parsed.textContent.length,
+    url: metadata.url || "",
+    crawl_time: metadata.crawl_time || "",
+    depth: metadata.depth || "",
+  };
 }
 
 /**
@@ -422,41 +443,28 @@ async function readRecentFiles(hours = 1, useAllPagination = false) {
       }
     }
 
-    // Display parsed content with metadata
-    console.log(
-      "\n\n================ ARTICLE CONTENT WITH METADATA ================"
-    );
+    // Create article objects from processed content
+    const articles = [];
+
     Object.keys(processedContent).forEach((groupKey) => {
       const content = processedContent[groupKey];
+      const article = createArticleObject(content);
 
-      // Skip items without metadata or without parsed content
-      if (!content.metadata || !content.parsed) return;
+      if (article) {
+        articles.push(article);
+      }
+    });
 
-      // Format essential metadata
-      const formattedMetadata = formatEssentialMetadata(content.metadata);
+    // Display article objects
+    console.log("\n\n================ VALID ARTICLES ================");
+    console.log(
+      `Found ${articles.length} valid articles with metadata and content`
+    );
 
-      // Skip if no essential metadata fields exist
-      if (!formattedMetadata) return;
-
-      console.log(`\n=== ${content.domain}/${content.hash} ===`);
-
-      // Article title and excerpt
-      console.log(`Title: ${content.parsed.title}`);
-      console.log(
-        `Excerpt: ${content.parsed.excerpt || "No excerpt available"}`
-      );
-      console.log(`Length: ${content.parsed.textContent.length} characters`);
-
-      // Article content (first part)
-      console.log(
-        `\nCONTENT:\n${content.parsed.textContent.substring(0, 300)}...`
-      );
-
-      // Essential metadata information
-      console.log(`\nMETADATA:\n${formattedMetadata}`);
-
-      // Separator for readability
-      console.log("\n" + "=".repeat(80));
+    articles.forEach((article) => {
+      console.log(`\n--- Article object for ${article.id} ---`);
+      console.log(JSON.stringify(article, null, 2));
+      console.log("=".repeat(80));
     });
 
     // Print summary of broken links
@@ -474,6 +482,7 @@ async function readRecentFiles(hours = 1, useAllPagination = false) {
       brokenLinks,
       completeLinks,
       processedContent,
+      articles,
     };
   } catch (error) {
     console.error("Error reading recent files:", error);
