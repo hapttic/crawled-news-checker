@@ -111,7 +111,3 @@ src/
 │   └── s3.js        # S3 operations
 └── index.js         # Entry point
 ```
-
-## License
-
-ISC
