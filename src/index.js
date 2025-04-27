@@ -14,6 +14,25 @@ const params = {
   Bucket: process.env.S3_BUCKET || "second-hapttic-bucket",
 };
 
+/**
+ * Filters S3 files that were modified after the specified hours
+ * @param {Array} files - Array of S3 objects from listObjectsV2
+ * @param {Number} hours - Number of hours to look back
+ * @returns {Array} - Filtered array of S3 objects
+ */
+function getFilesModifiedAfter(files, hours) {
+  if (!files || !Array.isArray(files)) {
+    return [];
+  }
+
+  const cutoffTime = new Date();
+  cutoffTime.setHours(cutoffTime.getHours() - hours);
+
+  return files.filter((file) => {
+    return file.LastModified > cutoffTime;
+  });
+}
+
 async function listFilesInBucket() {
   try {
     const data = await s3.listObjectsV2(params).promise();
@@ -41,5 +60,26 @@ async function listFilesInBucket() {
   }
 }
 
+// Get files modified in the last 24 hours
+async function getRecentFiles(hours = 24) {
+  try {
+    const allFiles = await listFilesInBucket();
+    const recentFiles = getFilesModifiedAfter(allFiles, hours);
+
+    console.log(
+      `Found ${recentFiles.length} files modified in the last ${hours} hours:`
+    );
+    recentFiles.forEach((file) => {
+      console.log(`- ${file.Key} (Last Modified: ${file.LastModified})`);
+    });
+
+    return recentFiles;
+  } catch (error) {
+    console.error("Error getting recent files:", error);
+    throw error;
+  }
+}
+
 // Execute the function
-listFilesInBucket().catch(console.error);
+// listFilesInBucket().catch(console.error);
+getRecentFiles(1).catch(console.error);
