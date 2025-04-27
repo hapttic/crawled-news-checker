@@ -159,6 +159,18 @@ function parseHtmlWithReadability(html, url = "") {
     // Parse the content
     const article = reader.parse();
 
+    // Check if article content is meaningful (not just boilerplate text)
+    if (article && article.textContent) {
+      const textLength = article.textContent.trim().length;
+      if (textLength < 50) {
+        console.log(
+          `Warning: Very short article content (${textLength} chars) for URL: ${url}`
+        );
+        // Still return the article, but flag it as potentially problematic
+        article.isPotentiallyEmpty = true;
+      }
+    }
+
     return article;
   } catch (error) {
     console.error("Error parsing HTML with Readability:", error);
@@ -190,6 +202,15 @@ function extractEssentialMetadata(metadata) {
     }
   });
 
+  // Parse crawl_time to create crawl_datetime if possible
+  if (extracted.crawl_time) {
+    try {
+      extracted.crawl_datetime = new Date(extracted.crawl_time);
+    } catch (error) {
+      console.error(`Error parsing crawl_time: ${extracted.crawl_time}`, error);
+    }
+  }
+
   return extracted;
 }
 
@@ -214,10 +235,31 @@ function createArticleObject(data) {
     excerpt: data.parsed.excerpt || "",
     content: data.parsed.textContent,
     contentLength: data.parsed.textContent.length,
+    isPotentiallyEmpty: data.parsed.isPotentiallyEmpty || false,
     url: metadata.url || "",
     crawl_time: metadata.crawl_time || "",
+    crawl_datetime: metadata.crawl_datetime || null,
     depth: metadata.depth || "",
   };
+}
+
+/**
+ * Check if an article has valid metadata
+ * @param {Object} metadata - Metadata object
+ * @returns {boolean} - Whether the metadata is valid
+ */
+function hasValidMetadata(metadata) {
+  if (!metadata) return false;
+
+  // Check if url exists and is a valid URL
+  if (!metadata.url || typeof metadata.url !== "string") return false;
+
+  try {
+    new URL(metadata.url); // This will throw if URL is invalid
+    return true;
+  } catch (error) {
+    return false;
+  }
 }
 
 /**
@@ -493,6 +535,8 @@ async function readRecentFiles(
 
     // Process each file content
     const processedContent = {};
+    const invalidMetadataUrls = [];
+    const failedReadabilityLinks = [];
 
     for (const file of fileContents) {
       // Extract the group key (domain/hash)
@@ -514,20 +558,100 @@ async function readRecentFiles(
       if (file.type === "metadata") {
         try {
           processedContent[groupKey].metadata = JSON.parse(file.content);
+
+          // Check for invalid metadata URL
+          if (!hasValidMetadata(processedContent[groupKey].metadata)) {
+            invalidMetadataUrls.push({
+              id: groupKey,
+              metadata: processedContent[groupKey].metadata,
+            });
+          }
         } catch (error) {
           console.error(`Error parsing metadata JSON for ${groupKey}:`, error);
           processedContent[groupKey].metadata = { error: "Invalid JSON" };
+
+          // Add to invalid metadata list
+          invalidMetadataUrls.push({
+            id: groupKey,
+            error: "Invalid JSON",
+          });
         }
       } else if (file.type === "html") {
         processedContent[groupKey].html = file.content;
 
         // Use Readability to parse HTML content
         const url = processedContent[groupKey].metadata?.url || "";
-        processedContent[groupKey].parsed = parseHtmlWithReadability(
-          file.content,
-          url
-        );
+        const parsedArticle = parseHtmlWithReadability(file.content, url);
+        processedContent[groupKey].parsed = parsedArticle;
+
+        // Check if Readability failed to extract meaningful content
+        if (
+          !parsedArticle ||
+          !parsedArticle.content ||
+          parsedArticle.textContent.trim().length < 100
+        ) {
+          failedReadabilityLinks.push({
+            id: groupKey,
+            url: url,
+            htmlLength: file.content.length,
+            parsedResult: parsedArticle
+              ? {
+                  title: parsedArticle.title,
+                  excerpt: parsedArticle.excerpt,
+                  contentLength: parsedArticle.textContent
+                    ? parsedArticle.textContent.trim().length
+                    : 0,
+                }
+              : null,
+          });
+        }
       }
+    }
+
+    // Print invalid metadata URLs
+    console.log("\n\n================ INVALID METADATA URLS ================");
+    if (invalidMetadataUrls.length === 0) {
+      console.log("No invalid metadata URLs found");
+    } else {
+      console.log(`Found ${invalidMetadataUrls.length} invalid metadata URLs:`);
+      invalidMetadataUrls.forEach((item) => {
+        console.log(`\n--- ${item.id} ---`);
+        if (item.error) {
+          console.log(`Error: ${item.error}`);
+        } else if (item.metadata) {
+          console.log(`URL: ${item.metadata.url || "undefined"}`);
+          console.log(`crawl_time: ${item.metadata.crawl_time || "undefined"}`);
+          console.log(
+            `All metadata: ${JSON.stringify(item.metadata, null, 2)}`
+          );
+        }
+      });
+    }
+
+    // Print links where Readability failed to extract content
+    console.log(
+      "\n\n================ FAILED READABILITY EXTRACTION ================"
+    );
+    if (failedReadabilityLinks.length === 0) {
+      console.log("No failed Readability extractions found");
+    } else {
+      console.log(
+        `Found ${failedReadabilityLinks.length} links where Readability failed to extract meaningful content:`
+      );
+      failedReadabilityLinks.forEach((item) => {
+        console.log(`\n--- ${item.id} ---`);
+        console.log(`URL: ${item.url || "undefined"}`);
+        console.log(`HTML Size: ${item.htmlLength} bytes`);
+        if (item.parsedResult) {
+          console.log(`Title: ${item.parsedResult.title || "undefined"}`);
+          console.log(`Excerpt: ${item.parsedResult.excerpt || "undefined"}`);
+          console.log(
+            `Content Length: ${item.parsedResult.contentLength} characters`
+          );
+        } else {
+          console.log("Parsing returned null result");
+        }
+      });
     }
 
     // Create article objects from processed content
@@ -577,6 +701,8 @@ async function readRecentFiles(
       completeLinks,
       processedContent,
       articles,
+      invalidMetadataUrls,
+      failedReadabilityLinks,
       mongoResult,
     };
   } catch (error) {
