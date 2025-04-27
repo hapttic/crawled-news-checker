@@ -1,6 +1,9 @@
-# AWS S3 File Operations
+# crawled-news-checker
 
-Simple Node.js application to work with AWS S3 buckets.
+crawled pages are on s3
+1. get articles text by mozilla reader
+2. check keyword match
+3. if match: move to articles collection
 
 ## Setup
 
