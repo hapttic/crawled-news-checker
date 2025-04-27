@@ -1,3 +1,4 @@
+require("dotenv").config();
 const AWS = require("aws-sdk");
 
 // Debug: Print credential provider chain details
@@ -10,7 +11,7 @@ console.log(
 const s3 = new AWS.S3();
 
 const params = {
-  Bucket: "second-hapttic-bucket",
+  Bucket: process.env.S3_BUCKET || "second-hapttic-bucket",
 };
 
 async function listFilesInBucket() {
