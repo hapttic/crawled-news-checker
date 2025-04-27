@@ -64,7 +64,11 @@ async function getFileContent(key) {
 function parseHtmlWithReadability(html, url = "") {
   try {
     // Create a DOM object from the HTML content
-    const dom = new JSDOM(html, { url });
+    const domOptions = {
+      url: url && url.startsWith("http") ? url : "https://example.com",
+    };
+
+    const dom = new JSDOM(html, domOptions);
 
     // Create a new Readability object
     const reader = new Readability(dom.window.document);
@@ -77,6 +81,39 @@ function parseHtmlWithReadability(html, url = "") {
     console.error("Error parsing HTML with Readability:", error);
     return null;
   }
+}
+
+/**
+ * Format essential metadata as a readable string
+ * @param {Object} metadata - Metadata object
+ * @returns {string|null} - Formatted metadata string or null if essential fields are missing
+ */
+function formatEssentialMetadata(metadata) {
+  if (!metadata) return null;
+
+  const formattedLines = [];
+
+  // Define essential fields to display
+  const essentialFields = {
+    url: "URL",
+    crawl_time: "Crawl Time",
+    depth: "Depth",
+  };
+
+  // Check if any essential fields exist
+  const hasEssentialFields = Object.keys(essentialFields).some(
+    (key) => metadata[key] !== undefined
+  );
+  if (!hasEssentialFields) return null;
+
+  // Add essential fields
+  for (const [key, label] of Object.entries(essentialFields)) {
+    if (metadata[key] !== undefined) {
+      formattedLines.push(`${label}: ${metadata[key]}`);
+    }
+  }
+
+  return formattedLines.join("\n");
 }
 
 /**
@@ -170,6 +207,65 @@ async function readHtmlAndMetadata(files) {
   return results;
 }
 
+/**
+ * Lists all files in bucket using pagination
+ * @param {Object} options - Options for listing objects
+ * @returns {Promise<Array>} - All files from the bucket
+ */
+async function listAllFilesInBucket(options = {}) {
+  const allFiles = [];
+  let continuationToken = null;
+  let pageCount = 0;
+
+  do {
+    try {
+      // Prepare parameters for the next request
+      const listParams = {
+        ...params,
+        MaxKeys: options.maxKeys || 1000,
+        ContinuationToken: continuationToken,
+      };
+
+      // If prefix is specified, add it to the params
+      if (options.prefix) {
+        listParams.Prefix = options.prefix;
+      }
+
+      // Request the next page of results
+      const data = await s3.listObjectsV2(listParams).promise();
+
+      // Add the files to our collection
+      if (data.Contents && data.Contents.length > 0) {
+        allFiles.push(...data.Contents);
+        pageCount++;
+
+        console.log(
+          `Retrieved page ${pageCount} with ${data.Contents.length} files (total: ${allFiles.length})`
+        );
+      }
+
+      // Set the continuation token for the next request
+      continuationToken = data.IsTruncated ? data.NextContinuationToken : null;
+
+      // If we hit a page limit, stop
+      if (options.maxPages && pageCount >= options.maxPages) {
+        console.log(
+          `Reached maximum page count (${options.maxPages}), stopping pagination`
+        );
+        break;
+      }
+    } catch (error) {
+      console.error("Error listing files from S3 bucket:", error);
+      throw error;
+    }
+  } while (continuationToken);
+
+  console.log(
+    `Retrieved ${allFiles.length} total files from ${pageCount} pages`
+  );
+  return allFiles;
+}
+
 async function listFilesInBucket() {
   try {
     const data = await s3.listObjectsV2(params).promise();
@@ -198,9 +294,18 @@ async function listFilesInBucket() {
 }
 
 // Get files modified in the last 24 hours
-async function getRecentFiles(hours = 24) {
+async function getRecentFiles(hours = 24, useAllPagination = false) {
   try {
-    const allFiles = await listFilesInBucket();
+    let allFiles;
+
+    if (useAllPagination) {
+      // Get all files using pagination
+      allFiles = await listAllFilesInBucket();
+    } else {
+      // Get just the first page of files
+      allFiles = await listFilesInBucket();
+    }
+
     const recentFiles = getFilesModifiedAfter(allFiles, hours);
 
     console.log(
@@ -218,9 +323,9 @@ async function getRecentFiles(hours = 24) {
 }
 
 // Process and analyze HTML and metadata files
-async function readRecentFiles(hours = 1) {
+async function readRecentFiles(hours = 1, useAllPagination = false) {
   try {
-    const recentFiles = await getRecentFiles(hours);
+    const recentFiles = await getRecentFiles(hours, useAllPagination);
     console.log(
       `Processing ${recentFiles.length} files for HTML and metadata...`
     );
@@ -317,23 +422,41 @@ async function readRecentFiles(hours = 1) {
       }
     }
 
-    // Display parsed content
-    console.log("\n\n================ PARSED CONTENT ================");
+    // Display parsed content with metadata
+    console.log(
+      "\n\n================ ARTICLE CONTENT WITH METADATA ================"
+    );
     Object.keys(processedContent).forEach((groupKey) => {
       const content = processedContent[groupKey];
 
-      if (content.parsed) {
-        console.log(`\n=== ${content.domain}/${content.hash} ===`);
-        console.log(`Title: ${content.parsed.title}`);
-        console.log(`Excerpt: ${content.parsed.excerpt}`);
-        console.log(`Length: ${content.parsed.textContent.length} characters`);
-        console.log(
-          `Content (first 300 chars): ${content.parsed.textContent.substring(
-            0,
-            300
-          )}...`
-        );
-      }
+      // Skip items without metadata or without parsed content
+      if (!content.metadata || !content.parsed) return;
+
+      // Format essential metadata
+      const formattedMetadata = formatEssentialMetadata(content.metadata);
+
+      // Skip if no essential metadata fields exist
+      if (!formattedMetadata) return;
+
+      console.log(`\n=== ${content.domain}/${content.hash} ===`);
+
+      // Article title and excerpt
+      console.log(`Title: ${content.parsed.title}`);
+      console.log(
+        `Excerpt: ${content.parsed.excerpt || "No excerpt available"}`
+      );
+      console.log(`Length: ${content.parsed.textContent.length} characters`);
+
+      // Article content (first part)
+      console.log(
+        `\nCONTENT:\n${content.parsed.textContent.substring(0, 300)}...`
+      );
+
+      // Essential metadata information
+      console.log(`\nMETADATA:\n${formattedMetadata}`);
+
+      // Separator for readability
+      console.log("\n" + "=".repeat(80));
     });
 
     // Print summary of broken links
@@ -361,4 +484,4 @@ async function readRecentFiles(hours = 1) {
 // Execute the function
 // listFilesInBucket().catch(console.error);
 // getRecentFiles(1).catch(console.error);
-readRecentFiles(1).catch(console.error);
+readRecentFiles(1, true).catch(console.error);
